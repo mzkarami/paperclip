@@ -50,6 +50,7 @@ import type {
 } from "./routes/instance-database-backups.js";
 import { createExecutionTargetRegistry } from "./adapters/execution-target-registry.js";
 import { registerKubernetesExecutionTargetDriver } from "./adapters/execution-targets/kubernetes.js";
+import { getAdapterDefaults } from "@paperclipai/execution-target-kubernetes";
 import { clusterConnectionsService } from "./services/cluster-connections.js";
 import { getSecretProvider } from "./secrets/provider-registry.js";
 import { bootstrapTokensService } from "./services/bootstrap-tokens.js";
@@ -643,9 +644,9 @@ export async function startServer(): Promise<StartedServer> {
     },
     // Per-run context resolver — looks up the company name to derive a
     // namespace-safe slug, then fills in image/init image and other defaults.
-    // M2 Tasks 25–27 will replace the hard-coded image tags with real
-    // operator-controlled cluster policy lookups (image pinning per cluster
-    // connection); for now we point at the freshly built v1 multi-arch tags.
+    // The runtime image is sourced per-adapterType from the
+    // adapter-defaults registry (single source of truth for image+envKeys+
+    // allowFqdns); operators override per-run via target.imageOverride.
     resolveRunContext: async ({ agent, target, connection, config }) => {
       const [company] = await (db as any)
         .select({ name: companies.name })
@@ -659,6 +660,15 @@ export async function startServer(): Promise<StartedServer> {
         .replace(/^-+|-+$/g, "")
         .slice(0, 32) || "company";
       const imageRegistry = connection.imageRegistry?.replace(/\/+$/, "") ?? "ghcr.io/paperclipai";
+      // Look up the per-adapter runtime image from the adapter-defaults
+      // registry. The registry's runtimeImage already includes the
+      // ghcr.io/paperclipai/ prefix; if a cluster connection pins a different
+      // imageRegistry, swap the host portion to honor it.
+      const adapterType = agent.adapterType ?? "unknown";
+      const defaults = getAdapterDefaults(adapterType);
+      const defaultsImageHost = defaults.runtimeImage.replace(/\/[^/]+$/, "");
+      const defaultsImageName = defaults.runtimeImage.slice(defaultsImageHost.length + 1);
+      const adapterImage = `${imageRegistry}/${defaultsImageName}:v1`;
       // Source the per-run provider env from the runtime-resolved adapter
       // config. Heartbeat already calls secretService.resolveAdapterConfigForRuntime
       // upstream of adapter.execute, so by the time we land here `config.env`
@@ -677,7 +687,7 @@ export async function startServer(): Promise<StartedServer> {
       }
       return {
         companySlug,
-        image: target.imageOverride ?? `${imageRegistry}/agent-runtime-claude:v1`,
+        image: target.imageOverride ?? adapterImage,
         initImage: `${imageRegistry}/agent-runtime-base:v1`,
         paperclipPublicUrl: connection.paperclipPublicUrl ?? process.env.PAPERCLIP_API_URL ?? "",
         workspaceStrategyJson: JSON.stringify({ kind: "ephemeral" }),
