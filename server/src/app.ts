@@ -45,6 +45,8 @@ import { ProviderRegistry } from "./oauth/registry.js";
 import { loadProviderConfigsFromDirectory } from "./oauth/yaml-loader.js";
 import { registerPluginContributions } from "./oauth/plugin-loader.js";
 import { createSlidingWindowLimiter } from "./oauth/rate-limiter.js";
+import { KNOWN_SHAPES } from "./oauth/shapes/index.js";
+import { oauthLogger } from "./oauth/logger.js";
 import { oauthRoutes } from "./routes/oauth.js";
 import { oauthCallbackRoute } from "./routes/oauth-callback.js";
 import { oauthMarkRevokedRoute } from "./routes/oauth-mark-revoked.js";
@@ -317,11 +319,26 @@ export async function createApp(
   const yamlConfigs = await loadProviderConfigsFromDirectory(
     path.join(process.cwd(), "server", "oauth-providers"),
   );
-  for (const cfg of yamlConfigs) oauthRegistry.register(cfg, "yaml");
+  const registerYamlConfig = (cfg: (typeof yamlConfigs)[number]): void => {
+    if (cfg.shape !== undefined) {
+      const shape = KNOWN_SHAPES[cfg.shape];
+      if (!shape) {
+        oauthLogger.error(
+          { provider: cfg.id, shape: cfg.shape, known: Object.keys(KNOWN_SHAPES) },
+          "OAuth provider references unknown shape module; skipping",
+        );
+        return;
+      }
+      oauthRegistry.register(cfg, "yaml", shape);
+      return;
+    }
+    oauthRegistry.register(cfg, "yaml");
+  };
+  for (const cfg of yamlConfigs) registerYamlConfig(cfg);
   const extraOauthDir = process.env.PAPERCLIP_OAUTH_PROVIDERS_DIR;
   if (extraOauthDir) {
     const extra = await loadProviderConfigsFromDirectory(extraOauthDir);
-    for (const cfg of extra) oauthRegistry.register(cfg, "yaml");
+    for (const cfg of extra) registerYamlConfig(cfg);
   }
 
   // publicUrl: prefer the explicit PAPERCLIP_PUBLIC_URL env var; fall back to
