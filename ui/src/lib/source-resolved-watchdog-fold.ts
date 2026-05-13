@@ -28,6 +28,7 @@ export interface SourceResolvedWatchdogFold {
   silenceStartedAt: string | null;
   silenceAgeMs: number | null;
   evaluationIssueId: string | null;
+  evaluationIssueIdentifier: string | null;
   cleanup: SourceResolvedFoldCleanup;
 }
 
@@ -90,6 +91,7 @@ export function parseSourceResolvedWatchdogFold(value: unknown): SourceResolvedW
     silenceStartedAt: asString(record.silenceStartedAt),
     silenceAgeMs: asFiniteNumber(record.silenceAgeMs),
     evaluationIssueId: asString(record.evaluationIssueId),
+    evaluationIssueIdentifier: asString(record.evaluationIssueIdentifier),
     cleanup: parseCleanup(record.cleanup),
   };
 }

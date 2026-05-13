@@ -34,6 +34,7 @@ function buildFold(overrides: Partial<SourceResolvedWatchdogFold> = {}): SourceR
     silenceStartedAt: "2026-05-12T18:30:00.000Z",
     silenceAgeMs: 18 * 60_000,
     evaluationIssueId: null,
+    evaluationIssueIdentifier: null,
     cleanup: {
       attempted: true,
       outcome: "terminated",
@@ -82,6 +83,7 @@ export const FoldCalloutWithEvaluationIssue: Story = {
       <SourceResolvedFoldCallout
         fold={buildFold({
           evaluationIssueId: "00000000-0000-0000-0000-0000eval0001",
+          evaluationIssueIdentifier: "PAP-9323",
           cleanup: {
             attempted: true,
             outcome: "termination_sent_still_running",

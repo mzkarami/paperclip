@@ -55,6 +55,7 @@ export function SourceResolvedFoldCallout({
   const silenceStartedLabel = isoOrLocaleString(fold.silenceStartedAt);
   const cleanupLabel = formatCleanupOutcome(fold.cleanup.outcome);
   const finalizedRelative = finalizedAt ? relativeTime(finalizedAt) : null;
+  const evaluationLabel = fold.evaluationIssueIdentifier ?? fold.evaluationIssueId?.slice(0, 8);
 
   return (
     <section
@@ -161,10 +162,10 @@ export function SourceResolvedFoldCallout({
         {fold.evaluationIssueId ? (
           <MetaRow label="Evaluation issue">
             <Link
-              to={issueLink(fold.evaluationIssueId, null)}
+              to={issueLink(fold.evaluationIssueId, fold.evaluationIssueIdentifier)}
               className="rounded-sm font-medium underline-offset-2 hover:underline"
             >
-              {fold.evaluationIssueId.slice(0, 8)}
+              {evaluationLabel}
             </Link>
           </MetaRow>
         ) : null}

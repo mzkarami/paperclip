@@ -13,10 +13,10 @@ import {
   approvals,
   activityLog,
   companies,
-  issueComments,
   heartbeatRunEvents,
   heartbeatRunWatchdogDecisions,
   heartbeatRuns,
+  issueComments,
   issueApprovals,
   issueRecoveryActions,
   issueRelations,
@@ -829,58 +829,33 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     const activityPredicates = [
       eq(activityLog.companyId, input.run.companyId),
       eq(activityLog.runId, input.run.id),
+      eq(activityLog.action, "issue.updated"),
       eq(activityLog.entityType, "issue"),
       eq(activityLog.entityId, input.sourceIssue.id),
       sql`${activityLog.details} ->> 'status' = ${input.sourceIssue.status}`,
     ];
-    const commentPredicates = [
-      eq(issueComments.companyId, input.run.companyId),
-      eq(issueComments.issueId, input.sourceIssue.id),
-      eq(issueComments.createdByRunId, input.run.id),
-    ];
     if (after) {
       activityPredicates.push(gte(activityLog.createdAt, after));
-      commentPredicates.push(gte(issueComments.createdAt, after));
     }
 
-    const [activity, comment] = await Promise.all([
-      db
-        .select({
-          id: activityLog.id,
-          createdAt: activityLog.createdAt,
-          action: activityLog.action,
-        })
-        .from(activityLog)
-        .where(and(...activityPredicates))
-        .orderBy(desc(activityLog.createdAt))
-        .limit(1)
-        .then((rows) => rows[0] ?? null),
-      db
-        .select({
-          id: issueComments.id,
-          createdAt: issueComments.createdAt,
-        })
-        .from(issueComments)
-        .where(and(...commentPredicates))
-        .orderBy(desc(issueComments.createdAt))
-        .limit(1)
-        .then((rows) => rows[0] ?? null),
-    ]);
+    const activity = await db
+      .select({
+        id: activityLog.id,
+        createdAt: activityLog.createdAt,
+        action: activityLog.action,
+      })
+      .from(activityLog)
+      .where(and(...activityPredicates))
+      .orderBy(desc(activityLog.createdAt))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
 
-    if (activity && (!comment || activity.createdAt >= comment.createdAt)) {
+    if (activity) {
       return {
         kind: "activity" as const,
         id: activity.id,
         createdAt: activity.createdAt,
         action: activity.action,
-      };
-    }
-    if (comment) {
-      return {
-        kind: "comment" as const,
-        id: comment.id,
-        createdAt: comment.createdAt,
-        action: "issue_comment_created",
       };
     }
     return null;
@@ -1028,6 +1003,8 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         sameRunEvidenceAt: input.evidence.createdAt.toISOString(),
         silenceStartedAt: input.silenceStartedAt?.toISOString() ?? null,
         silenceAgeMs: input.silenceAgeMs,
+        evaluationIssueId: input.existingEvaluation?.id ?? null,
+        evaluationIssueIdentifier: input.existingEvaluation?.identifier ?? null,
         cleanup,
       },
     };

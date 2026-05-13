@@ -345,6 +345,8 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
         sourceIssueId: issueId,
         sourceIssueStatus: "done",
         sameRunEvidenceKind: "activity",
+        evaluationIssueId: null,
+        evaluationIssueIdentifier: null,
         cleanup: { outcome: "no_process_metadata" },
       },
     });
@@ -387,13 +389,57 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
     expect(evaluation?.parentId).toBeNull();
   });
 
+  it("still escalates when a same-run comment is followed by another actor marking the source done", async () => {
+    const now = new Date("2026-04-22T20:00:00.000Z");
+    const { companyId, issueId, runId, issuePrefix } = await seedRunningRun({
+      now,
+      ageMs: ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS + 60_000,
+      sourceStatus: "in_progress",
+      sameRunTerminalEvidence: "comment",
+    });
+    const completedAt = new Date(now.getTime() - 5 * 60_000);
+    await db
+      .update(issues)
+      .set({ status: "done", completedAt, updatedAt: completedAt })
+      .where(eq(issues.id, issueId));
+    await db.insert(activityLog).values({
+      companyId,
+      actorType: "user",
+      actorId: "board-user",
+      agentId: null,
+      runId: null,
+      action: "issue.updated",
+      entityType: "issue",
+      entityId: issueId,
+      details: {
+        identifier: `${issuePrefix}-1`,
+        status: "done",
+        _previous: { status: "in_progress" },
+      },
+      createdAt: completedAt,
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.scanSilentActiveRuns({ now, companyId });
+
+    expect(result).toMatchObject({ created: 1, folded: 0 });
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    expect(run?.status).toBe("running");
+    const [evaluation] = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "stale_active_run_evaluation")));
+    expect(evaluation?.originId).toBe(runId);
+    expect(evaluation?.parentId).toBeNull();
+  });
+
   it("folds existing evaluation and active watchdog recovery action idempotently", async () => {
     const now = new Date("2026-04-22T20:00:00.000Z");
     const { companyId, managerId, issueId, runId, issuePrefix } = await seedRunningRun({
       now,
       ageMs: ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS + 60_000,
       sourceStatus: "done",
-      sameRunTerminalEvidence: "comment",
+      sameRunTerminalEvidence: "activity",
     });
     const evaluationIssueId = randomUUID();
     await db.insert(issues).values({
@@ -438,6 +484,15 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
     expect(second).toMatchObject({ scanned: 0, created: 0, folded: 0 });
     const [evaluation] = await db.select().from(issues).where(eq(issues.id, evaluationIssueId));
     expect(evaluation?.status).toBe("done");
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    expect(run?.resultJson).toMatchObject({
+      sourceResolvedWatchdogFold: {
+        sourceIssueId: issueId,
+        sourceIssueStatus: "done",
+        evaluationIssueId,
+        evaluationIssueIdentifier: `${issuePrefix}-2`,
+      },
+    });
     const [action] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, issueId));
     expect(action?.status).toBe("resolved");
     expect(action?.outcome).toBe("false_positive");
