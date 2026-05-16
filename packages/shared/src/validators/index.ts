@@ -47,6 +47,9 @@ export {
   createClipCommentSchema,
   createClipShowcaseSchema,
   createClipImportTelemetrySchema,
+  clipSharePreviewSchema,
+  clipImportPreviewSchema,
+  clipImportApplySchema,
   type CreateClipCreatorProfile,
   type ClipDependencyInput,
   type ClipRevisionInput,
@@ -58,6 +61,9 @@ export {
   type CreateClipComment,
   type CreateClipShowcase,
   type CreateClipImportTelemetry,
+  type ClipSharePreview,
+  type ClipImportPreview,
+  type ClipImportApply,
 } from "./clip.js";
 export {
   environmentDriverSchema,

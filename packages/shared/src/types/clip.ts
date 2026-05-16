@@ -142,3 +142,75 @@ export interface PublicClip {
   createdAt: Date | string;
   updatedAt: Date | string;
 }
+
+export interface ClipSharePreviewRequest {
+  source: {
+    type: ClipType;
+    id: string;
+  };
+  title?: string;
+  summary?: string;
+  slug?: string;
+  visibility?: ClipVisibility;
+  revisionNote?: string | null;
+}
+
+export interface ClipSharePreviewResult {
+  source: {
+    type: ClipType;
+    id: string;
+    label: string;
+  };
+  publishRequest: Record<string, unknown>;
+  exportPreview: Record<string, unknown>;
+  manifest: Record<string, unknown>;
+  dependencyCounts: {
+    adapters: number;
+    plugins: number;
+    skills: number;
+    secrets: number;
+    permissions: number;
+    workspaces: number;
+  };
+  redactionSummary: {
+    allowed: number;
+    redacted: number;
+    summarized: number;
+    omitted: number;
+  };
+  dangerousCapabilities: string[];
+  warnings: string[];
+}
+
+export interface ClipImportPreviewRequest {
+  url: string;
+  collisionStrategy?: "rename" | "skip";
+}
+
+export interface ClipImportPreviewResult {
+  clip: PublicClip;
+  preview: Record<string, unknown>;
+  safety: {
+    dangerousCapabilities: string[];
+    requiredSecrets: string[];
+    permissions: string[];
+    routineTriggersEnabledByDefault: boolean;
+    webhookSecretsRegenerated: boolean;
+  };
+  source: {
+    url: string;
+    revisionNumber: number;
+    manifestChecksum: string;
+    artifactChecksum: string;
+  };
+}
+
+export interface ClipImportApplyRequest extends ClipImportPreviewRequest {
+  selectedOptions?: Record<string, unknown>;
+}
+
+export interface ClipImportApplyResult {
+  importResult: Record<string, unknown>;
+  clip: PublicClip;
+  source: ClipImportPreviewResult["source"];
+}

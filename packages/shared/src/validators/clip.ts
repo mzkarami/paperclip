@@ -178,3 +178,30 @@ export const createClipImportTelemetrySchema = z.object({
 });
 
 export type CreateClipImportTelemetry = z.infer<typeof createClipImportTelemetrySchema>;
+
+export const clipSharePreviewSchema = z.object({
+  source: z.object({
+    type: clipTypeSchema,
+    id: z.string().trim().min(1).max(160),
+  }),
+  title: z.string().trim().min(1).max(160).optional(),
+  summary: shortPublicTextSchema.optional(),
+  slug: slugSchema.optional(),
+  visibility: clipVisibilitySchema.optional(),
+  revisionNote: z.string().trim().max(4_000).nullable().optional(),
+});
+
+export type ClipSharePreview = z.infer<typeof clipSharePreviewSchema>;
+
+export const clipImportPreviewSchema = z.object({
+  url: z.string().trim().min(1).max(2_000),
+  collisionStrategy: z.enum(["rename", "skip"]).optional(),
+});
+
+export type ClipImportPreview = z.infer<typeof clipImportPreviewSchema>;
+
+export const clipImportApplySchema = clipImportPreviewSchema.extend({
+  selectedOptions: recordSchema.optional(),
+});
+
+export type ClipImportApply = z.infer<typeof clipImportApplySchema>;

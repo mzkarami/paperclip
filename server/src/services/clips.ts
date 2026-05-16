@@ -123,6 +123,10 @@ export function clipService(db: Db) {
     return first(await db.select().from(clipCreatorProfiles).where(eq(clipCreatorProfiles.id, id)).limit(1));
   }
 
+  async function getCreatorProfileByHandle(handle: string) {
+    return first(await db.select().from(clipCreatorProfiles).where(eq(clipCreatorProfiles.handle, handle)).limit(1));
+  }
+
   async function getClipById(id: string) {
     return first(await db.select().from(clips).where(eq(clips.id, id)).limit(1));
   }
@@ -252,6 +256,13 @@ export function clipService(db: Db) {
       return profile;
     }
     if (!input.creatorProfile) throw unprocessable("creatorProfileId or creatorProfile is required");
+    const existing = await getCreatorProfileByHandle(input.creatorProfile.handle);
+    if (existing) {
+      if (existing.companyId !== companyId) {
+        throw conflict("Creator profile handle already belongs to another company");
+      }
+      return existing;
+    }
     return createCreatorProfile(companyId, input.creatorProfile);
   }
 
@@ -670,6 +681,7 @@ export function clipService(db: Db) {
   return {
     createCreatorProfile,
     getCreatorProfileById,
+    getCreatorProfileByHandle,
     getClipById,
     getClipBySlug,
     listPublic,

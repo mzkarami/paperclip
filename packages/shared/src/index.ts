@@ -730,6 +730,12 @@ export {
   type ClipDependency,
   type ClipRevision,
   type PublicClip,
+  type ClipSharePreviewRequest,
+  type ClipSharePreviewResult,
+  type ClipImportPreviewRequest,
+  type ClipImportPreviewResult,
+  type ClipImportApplyRequest,
+  type ClipImportApplyResult,
 } from "./types/clip.js";
 
 export {
@@ -779,6 +785,9 @@ export {
   createClipCommentSchema,
   createClipShowcaseSchema,
   createClipImportTelemetrySchema,
+  clipSharePreviewSchema,
+  clipImportPreviewSchema,
+  clipImportApplySchema,
   type CreateClipCreatorProfile,
   type PublishClip,
   type CreateClipRevision,
@@ -786,6 +795,9 @@ export {
   type CreateClipVote,
   type CreateClipReport,
   type CreateClipComment,
+  type ClipSharePreview,
+  type ClipImportPreview,
+  type ClipImportApply,
   type CreateClipShowcase,
   type CreateClipImportTelemetry,
   environmentDriverSchema,
