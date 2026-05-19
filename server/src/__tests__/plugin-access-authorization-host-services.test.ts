@@ -239,6 +239,22 @@ describeEmbeddedPostgres("plugin access and authorization host services", () => 
       reason: "deny_policy_restricted",
     });
     expect(explanation).toMatchObject(preview);
+
+    const injectedBoardPreview = await services.authorization.previewAssignment({
+      companyId: company.id,
+      actor: {
+        type: "board",
+        userId: "operator",
+        companyIds: [company.id],
+        source: "local_implicit",
+        isInstanceAdmin: true,
+      } as any,
+      target: { assigneeAgentId: targetAgent!.id },
+    });
+    expect(injectedBoardPreview).toMatchObject({
+      allowed: false,
+      reason: "deny_policy_restricted",
+    });
     services.dispose();
   });
 });

@@ -73,7 +73,7 @@ import { isIP } from "node:net";
 import { logger } from "../middleware/logger.js";
 import { getTelemetryClient } from "../telemetry.js";
 import { accessService } from "./access.js";
-import { authorizationService } from "./authorization.js";
+import { authorizationService, type AuthorizationActor } from "./authorization.js";
 import { sanitizeRecord } from "../redaction.js";
 
 // ---------------------------------------------------------------------------
@@ -952,6 +952,29 @@ export function buildHostServices(
       principalType: member.principalType as PrincipalType,
       status: member.status as "pending" | "active" | "suspended" | "archived",
       grants: grants.map(redactGrant),
+    };
+  };
+
+  const pluginAssignmentActor = (actor: {
+    type: "agent" | "board";
+    agentId?: string | null;
+    companyId?: string | null;
+    userId?: string | null;
+    companyIds?: string[];
+  }): AuthorizationActor => {
+    if (actor.type === "agent") {
+      return {
+        type: "agent",
+        agentId: actor.agentId ?? null,
+        companyId: actor.companyId ?? null,
+        source: "agent_key",
+      };
+    }
+    return {
+      type: "board",
+      userId: actor.userId ?? null,
+      companyIds: Array.isArray(actor.companyIds) ? actor.companyIds : [],
+      source: "session",
     };
   };
 
@@ -2201,7 +2224,7 @@ export function buildHostServices(
       async updateMember(params) {
         const companyId = ensureCompanyId(params.companyId);
         await ensurePluginAvailableForCompany(companyId);
-        const updated = await access.updateMember(companyId, params.memberId, params.patch as any);
+        const updated = await access.updateMember(companyId, params.memberId, params.patch);
         if (!updated) throw new Error("Member not found");
         await logPluginActivity({
           companyId,
@@ -2439,7 +2462,7 @@ export function buildHostServices(
         const companyId = ensureCompanyId(params.companyId);
         await ensurePluginAvailableForCompany(companyId);
         return authorization.decide({
-          actor: params.actor as any,
+          actor: pluginAssignmentActor(params.actor),
           action: "tasks:assign",
           resource: { type: "issue", companyId, ...params.target },
           scope: {
@@ -2455,7 +2478,7 @@ export function buildHostServices(
         const companyId = ensureCompanyId(params.companyId);
         await ensurePluginAvailableForCompany(companyId);
         return authorization.decide({
-          actor: params.actor as any,
+          actor: pluginAssignmentActor(params.actor),
           action: "tasks:assign",
           resource: { type: "issue", companyId, ...params.target },
           scope: {

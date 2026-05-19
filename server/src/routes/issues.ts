@@ -1246,12 +1246,6 @@ export function issueRoutes(
     return (req.actor.companyIds ?? []).includes(companyId);
   }
 
-  function canCreateAgentsLegacy(agent: { permissions: Record<string, unknown> | null | undefined; role: string }) {
-    if (agent.role === "ceo") return true;
-    if (!agent.permissions || typeof agent.permissions !== "object") return false;
-    return Boolean((agent.permissions as Record<string, unknown>).canCreateAgents);
-  }
-
   type TaskAssignmentAuthorizationScope = {
     issueId?: string | null;
     projectId?: string | null;
@@ -1278,41 +1272,22 @@ export function issueRoutes(
     assignmentScope?: TaskAssignmentAuthorizationScope,
   ) {
     assertCompanyAccess(req, companyId);
-    const decide = (access as typeof access & { decide?: typeof access.decide }).decide;
-    if (typeof decide === "function") {
-      const decision = await decide({
-        actor: req.actor,
-        action: "tasks:assign",
-        resource: {
-          type: "issue",
-          companyId,
-          issueId: assignmentScope?.issueId ?? null,
-          projectId: assignmentScope?.projectId ?? null,
-          parentIssueId: assignmentScope?.parentIssueId ?? null,
-          assigneeAgentId: assignmentScope?.assigneeAgentId ?? null,
-          assigneeUserId: assignmentScope?.assigneeUserId ?? null,
-        },
-        scope: assignmentScope ?? null,
-      });
-      if (decision.allowed) return;
-      throw forbidden(decision.explanation);
-    }
-
-    if (req.actor.type === "board") {
-      if (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin) return;
-      const allowed = await access.canUser(companyId, req.actor.userId, "tasks:assign");
-      if (!allowed) throw forbidden("Missing permission: tasks:assign");
-      return;
-    }
-    if (req.actor.type === "agent") {
-      if (!req.actor.agentId) throw forbidden("Agent authentication required");
-      const allowedByGrant = await access.hasPermission(companyId, "agent", req.actor.agentId, "tasks:assign");
-      if (allowedByGrant) return;
-      const actorAgent = await agentsSvc.getById(req.actor.agentId);
-      if (actorAgent && actorAgent.companyId === companyId && canCreateAgentsLegacy(actorAgent)) return;
-      throw forbidden("Missing permission: tasks:assign");
-    }
-    throw unauthorized();
+    const decision = await access.decide({
+      actor: req.actor,
+      action: "tasks:assign",
+      resource: {
+        type: "issue",
+        companyId,
+        issueId: assignmentScope?.issueId ?? null,
+        projectId: assignmentScope?.projectId ?? null,
+        parentIssueId: assignmentScope?.parentIssueId ?? null,
+        assigneeAgentId: assignmentScope?.assigneeAgentId ?? null,
+        assigneeUserId: assignmentScope?.assigneeUserId ?? null,
+      },
+      scope: assignmentScope ?? null,
+    });
+    if (decision.allowed) return;
+    throw forbidden(decision.explanation);
   }
 
   function requireAgentRunId(req: Request, res: Response) {
@@ -1328,41 +1303,12 @@ export function issueRoutes(
     companyId: string,
     assigneeAgentId: string,
   ) {
-    const decide = (access as typeof access & { decide?: typeof access.decide }).decide;
-    if (typeof decide === "function") {
-      const decision = await decide({
-        actor: { type: "agent", agentId: actorAgentId, companyId },
-        action: "tasks:manage_active_checkouts",
-        resource: { type: "issue", companyId, assigneeAgentId },
-      });
-      return decision.allowed;
-    }
-
-    const allowedByGrant = await access.hasPermission(
-      companyId,
-      "agent",
-      actorAgentId,
-      "tasks:manage_active_checkouts",
-    );
-    if (allowedByGrant) return true;
-
-    const companyAgents = await agentsSvc.list(companyId);
-    const agentsById = new Map(companyAgents.map((agent) => [agent.id, agent]));
-    const actorAgent = agentsById.get(actorAgentId);
-    if (!actorAgent) return false;
-    if (canCreateAgentsLegacy(actorAgent)) return true;
-
-    // Reporting-chain managers may intervene in an agent's active checkout
-    // without taking the task over. Peers must own the checkout/run first.
-    let cursor: string | null = assigneeAgentId;
-    for (let depth = 0; cursor && depth < 50; depth += 1) {
-      const assignee = agentsById.get(cursor);
-      if (!assignee) return false;
-      if (assignee.reportsTo === actorAgentId) return true;
-      cursor = assignee.reportsTo;
-    }
-
-    return false;
+    const decision = await access.decide({
+      actor: { type: "agent", agentId: actorAgentId, companyId },
+      action: "tasks:manage_active_checkouts",
+      resource: { type: "issue", companyId, assigneeAgentId },
+    });
+    return decision.allowed;
   }
 
   async function assertAgentIssueMutationAllowed(

@@ -152,6 +152,8 @@ type AssignmentPolicyEffect =
   | { kind: "requires_approval"; explanation: string }
   | { kind: "unknown"; explanation: string };
 
+type AgentHierarchyRow = { id: string; reportsTo: string | null };
+
 function evaluateAuthorizationPolicyForAssignment(
   policy: Record<string, unknown> | null | undefined,
   label: string,
@@ -222,14 +224,12 @@ function evaluateAuthorizationPolicyForAssignment(
   return { kind: "none" };
 }
 
-async function isAgentInSubtree(db: Db, companyId: string, rootAgentId: string, targetAgentId: string) {
+function agentIsInSubtree(
+  agentsById: Map<string, AgentHierarchyRow>,
+  rootAgentId: string,
+  targetAgentId: string,
+) {
   if (rootAgentId === targetAgentId) return true;
-
-  const rows = await db
-    .select({ id: agents.id, reportsTo: agents.reportsTo })
-    .from(agents)
-    .where(eq(agents.companyId, companyId));
-  const agentsById = new Map(rows.map((agent) => [agent.id, agent]));
 
   let cursor: string | null = targetAgentId;
   for (let depth = 0; cursor && depth < 50; depth += 1) {
@@ -239,6 +239,22 @@ async function isAgentInSubtree(db: Db, companyId: string, rootAgentId: string, 
     cursor = current.reportsTo;
   }
   return false;
+}
+
+async function loadCompanyAgentHierarchy(db: Db, companyId: string) {
+  const rows = await db
+    .select({ id: agents.id, reportsTo: agents.reportsTo })
+    .from(agents)
+    .where(eq(agents.companyId, companyId));
+  return new Map(rows.map((agent) => [agent.id, agent]));
+}
+
+async function isAgentInSubtree(db: Db, companyId: string, rootAgentId: string, targetAgentId: string) {
+  return agentIsInSubtree(
+    await loadCompanyAgentHierarchy(db, companyId),
+    rootAgentId,
+    targetAgentId,
+  );
 }
 
 async function scopeAllows(
@@ -302,9 +318,10 @@ async function scopeAllows(
   if (subtreeRootAgentIds.length > 0) {
     constrained = true;
     if (!targetAssigneeAgentId) return false;
+    const agentsById = await loadCompanyAgentHierarchy(db, companyId);
     let matchesSubtree = false;
     for (const rootAgentId of subtreeRootAgentIds) {
-      if (await isAgentInSubtree(db, companyId, rootAgentId, targetAssigneeAgentId)) {
+      if (agentIsInSubtree(agentsById, rootAgentId, targetAssigneeAgentId)) {
         matchesSubtree = true;
         break;
       }
@@ -530,20 +547,7 @@ export function authorizationService(db: Db) {
   }
 
   async function isManagerOf(companyId: string, managerAgentId: string, assigneeAgentId: string) {
-    const rows = await db
-      .select({ id: agents.id, reportsTo: agents.reportsTo })
-      .from(agents)
-      .where(eq(agents.companyId, companyId));
-    const agentsById = new Map(rows.map((agent) => [agent.id, agent]));
-
-    let cursor: string | null = assigneeAgentId;
-    for (let depth = 0; cursor && depth < 50; depth += 1) {
-      const assignee = agentsById.get(cursor);
-      if (!assignee) return false;
-      if (assignee.reportsTo === managerAgentId) return true;
-      cursor = assignee.reportsTo;
-    }
-    return false;
+    return isAgentInSubtree(db, companyId, managerAgentId, assigneeAgentId);
   }
 
   async function decide(input: {
@@ -611,6 +615,7 @@ export function authorizationService(db: Db) {
     }
 
     if (input.actor.type === "board") {
+      let taskAssignmentPolicyEffect: AssignmentPolicyEffect | null = null;
       if (input.actor.source === "local_implicit") {
         return allow({
           action: input.action,
@@ -641,6 +646,7 @@ export function authorizationService(db: Db) {
           });
         }
         const policyEffect = await assignmentPolicyEffect(input.resource);
+        taskAssignmentPolicyEffect = policyEffect;
         const policyDeny = await denyForAssignmentPolicyIfNeeded(policyEffect);
         if (policyDeny) return policyDeny;
         const membership = await getActiveMembership(companyId, "user", input.actor.userId);
@@ -649,13 +655,6 @@ export function authorizationService(db: Db) {
             action: input.action,
             reason: "allow_simple_company_member",
             explanation: "Allowed by simple mode company-wide task assignment default.",
-          });
-        }
-        if (policyEffect.kind === "none" && !input.actor.memberships && input.actor.companyIds?.includes(companyId)) {
-          return allow({
-            action: input.action,
-            reason: "allow_simple_company_member",
-            explanation: "Allowed by legacy company membership context.",
           });
         }
       }
@@ -669,7 +668,7 @@ export function authorizationService(db: Db) {
       if (input.action === "tasks:assign") {
         const grantDecision = await decideWithTaskAssignmentGrants("user", input.actor.userId);
         if (grantDecision.allowed) return grantDecision;
-        const policyEffect = await assignmentPolicyEffect(input.resource);
+        const policyEffect = taskAssignmentPolicyEffect ?? await assignmentPolicyEffect(input.resource);
         if (policyEffect.kind === "restricted") return denyRestrictedAssignmentPolicy(policyEffect);
         return grantDecision;
       }

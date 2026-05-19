@@ -30,6 +30,7 @@ const mockIssueService = vi.hoisted(() => ({
 
 const mockAccessService = vi.hoisted(() => ({
   canUser: vi.fn(),
+  decide: vi.fn(),
   hasPermission: vi.fn(),
 }));
 
@@ -274,8 +275,14 @@ describe("agent issue mutation checkout ownership", () => {
     vi.doUnmock("../middleware/index.js");
     registerRouteMocks();
     vi.clearAllMocks();
-    delete (mockAccessService as any).decide;
     mockAccessService.canUser.mockReset();
+    mockAccessService.decide.mockReset();
+    mockAccessService.decide.mockImplementation(async (input: { action: string }) => ({
+      allowed: input.action === "tasks:assign",
+      action: input.action,
+      reason: input.action === "tasks:assign" ? "allow_explicit_grant" : "deny_missing_grant",
+      explanation: input.action === "tasks:assign" ? "Allowed by test assignment default." : "Missing permission.",
+    }));
     mockAccessService.hasPermission.mockReset();
     mockAgentService.getById.mockReset();
     mockAgentService.list.mockReset();
@@ -683,12 +690,12 @@ describe("agent issue mutation checkout ownership", () => {
   });
 
   it("allows agents with the active-checkout management grant to mutate active checkouts", async () => {
-    mockAccessService.hasPermission.mockImplementation(async (
-      _companyId: string,
-      _principalType: string,
-      principalId: string,
-      permissionKey: string,
-    ) => principalId === peerAgentId && permissionKey === "tasks:manage_active_checkouts");
+    mockAccessService.decide.mockImplementation(async (input: { action: string }) => ({
+      allowed: input.action === "tasks:manage_active_checkouts",
+      action: input.action,
+      reason: input.action === "tasks:manage_active_checkouts" ? "allow_explicit_grant" : "deny_missing_grant",
+      explanation: input.action === "tasks:manage_active_checkouts" ? "Allowed by checkout management grant." : "Missing permission.",
+    }));
 
     const res = await request(await createApp(peerActor())).patch(`/api/issues/${issueId}`).send({ title: "Managed update" });
 
