@@ -10,10 +10,12 @@ export const cloudUpstreamConnections = pgTable(
     sourceInstanceId: text("source_instance_id").notNull(),
     sourceInstanceFingerprint: text("source_instance_fingerprint").notNull(),
     sourcePublicKey: text("source_public_key").notNull(),
+    // Stored through the Cloud Upstream service as an encrypted credential envelope.
     privateKeyPem: text("private_key_pem").notNull(),
     tokenStatus: text("token_status").notNull(),
     scopes: text("scopes").array().notNull().default([]),
     authorizedGlobalUserId: text("authorized_global_user_id"),
+    // Stored through the Cloud Upstream service as an encrypted credential envelope.
     accessToken: text("access_token"),
     tokenId: text("token_id"),
     tokenExpiresAt: timestamp("token_expires_at", { withTimezone: true }),

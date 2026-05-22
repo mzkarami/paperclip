@@ -119,16 +119,22 @@ export function CloudUpstream() {
     },
     onError: (error) => setActionError(error instanceof Error ? error.message : "Failed to finish connection."),
   });
+  const {
+    mutate: finishConnect,
+    isError: finishConnectFailed,
+    isPending: finishConnectPending,
+    isSuccess: finishConnectSucceeded,
+  } = finishMutation;
 
   useEffect(() => {
-    if (!cloudSyncEnabled || !code || !state || finishMutation.isPending || finishMutation.isSuccess) return;
+    if (!cloudSyncEnabled || !code || !state || finishConnectPending || finishConnectSucceeded || finishConnectFailed) return;
     const pendingConnectionId = localStorage.getItem(PENDING_CONNECTION_KEY);
     if (!pendingConnectionId) {
       setActionError("No pending cloud upstream connection was found. Start the connection again.");
       return;
     }
-    finishMutation.mutate({ pendingConnectionId, code, state });
-  }, [cloudSyncEnabled, code, state, finishMutation]);
+    finishConnect({ pendingConnectionId, code, state });
+  }, [cloudSyncEnabled, code, finishConnect, finishConnectFailed, finishConnectPending, finishConnectSucceeded, state]);
 
   useEffect(() => {
     if (callbackError) {
@@ -152,7 +158,8 @@ export function CloudUpstream() {
   });
 
   const previewMutation = useMutation({
-    mutationFn: (connectionId: string) => cloudUpstreamsApi.preview(connectionId),
+    mutationFn: (input: { connectionId: string; companyId: string }) =>
+      cloudUpstreamsApi.preview(input.connectionId, { companyId: input.companyId }),
     onSuccess: (nextPreview) => {
       setPreview(nextPreview);
       setActionError(null);
@@ -161,8 +168,11 @@ export function CloudUpstream() {
   });
 
   const runMutation = useMutation({
-    mutationFn: (input: { connectionId: string; retryOfRunId?: string | null }) =>
-      cloudUpstreamsApi.createRun(input.connectionId, { retryOfRunId: input.retryOfRunId ?? null }),
+    mutationFn: (input: { connectionId: string; companyId: string; retryOfRunId?: string | null }) =>
+      cloudUpstreamsApi.createRun(input.connectionId, {
+        companyId: input.companyId,
+        retryOfRunId: input.retryOfRunId ?? null,
+      }),
     onSuccess: async (run) => {
       setActiveRun(run);
       setNotice(run.status === "succeeded"
@@ -175,7 +185,10 @@ export function CloudUpstream() {
   });
   const activationMutation = useMutation({
     mutationFn: (input: { run: CloudUpstreamRun; entityType: CloudUpstreamActivationEntityType }) =>
-      cloudUpstreamsApi.activateEntities(input.run.connectionId, input.run.id, { entityType: input.entityType }),
+      cloudUpstreamsApi.activateEntities(input.run.connectionId, input.run.id, {
+        companyId: input.run.companyId,
+        entityType: input.entityType,
+      }),
     onSuccess: async (run) => {
       setActiveRun(run);
       setNotice("Activation checklist updated.");
@@ -271,7 +284,7 @@ export function CloudUpstream() {
                 <Button
                   variant="outline"
                   size="sm"
-                  onClick={() => previewMutation.mutate(connection.id)}
+                  onClick={() => previewMutation.mutate({ connectionId: connection.id, companyId: connection.companyId })}
                   disabled={previewMutation.isPending || connection.tokenStatus !== "connected"}
                 >
                   {previewMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCcw className="h-4 w-4" />}
@@ -302,7 +315,7 @@ export function CloudUpstream() {
           <div className="flex items-center justify-between gap-3">
             <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Preview</div>
             <Button
-              onClick={() => runMutation.mutate({ connectionId: preview.connectionId })}
+              onClick={() => runMutation.mutate({ connectionId: preview.connectionId, companyId: preview.sourceCompanyId })}
               disabled={runMutation.isPending || !preview.schemaCompatible}
             >
               {runMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <CloudUpload className="h-4 w-4" />}
@@ -328,7 +341,11 @@ export function CloudUpstream() {
                 <Button
                   variant="outline"
                   size="sm"
-                  onClick={() => runMutation.mutate({ connectionId: latestRun.connectionId, retryOfRunId: latestRun.id })}
+                  onClick={() => runMutation.mutate({
+                    connectionId: latestRun.connectionId,
+                    companyId: latestRun.companyId,
+                    retryOfRunId: latestRun.id,
+                  })}
                   disabled={runMutation.isPending}
                 >
                   <RefreshCcw className="h-4 w-4" />
@@ -338,7 +355,7 @@ export function CloudUpstream() {
                 <Button
                   variant="outline"
                   size="sm"
-                  onClick={() => runMutation.mutate({ connectionId: latestRun.connectionId })}
+                  onClick={() => runMutation.mutate({ connectionId: latestRun.connectionId, companyId: latestRun.companyId })}
                   disabled={runMutation.isPending}
                 >
                   <RefreshCcw className="h-4 w-4" />

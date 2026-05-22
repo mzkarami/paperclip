@@ -30,6 +30,7 @@ import {
 } from "@paperclipai/db";
 import { badRequest, HttpError, notFound } from "../errors.js";
 import { companyPortabilityService } from "./company-portability.js";
+import { localEncryptedProvider } from "../secrets/local-encrypted-provider.js";
 
 const DEFAULT_SCOPES = ["upstream_import:preview", "upstream_import:write", "upstream_import:read"];
 const TRANSFER_SCHEMA = {
@@ -39,6 +40,9 @@ const TRANSFER_SCHEMA = {
   minor: 0,
 } as const;
 const DEFAULT_MAX_ENTITIES_PER_CHUNK = 100;
+const DISCOVERY_FETCH_TIMEOUT_MS = 30_000;
+const REMOTE_FETCH_TIMEOUT_MS = 120_000;
+const CLOUD_CREDENTIAL_PREFIX = "paperclip-cloud-credential:";
 
 type NormalizedSha256 = `sha256:${string}`;
 
@@ -75,7 +79,6 @@ type LocalUpstreamExportChunk = {
   totalChunks: number;
   byteLength: number;
   sha256: NormalizedSha256;
-  manifestHash: NormalizedSha256;
   payload: {
     entityKeys: SourceEntityKey[];
   };
@@ -100,9 +103,8 @@ type UpstreamTransferManifest = {
   idempotencyKey: string;
   generatedAt: string;
   entityCount: number;
-  perEntityTypeCounts: Record<string, number>;
   entities: UpstreamTransferEntityRecord[];
-  chunks: Array<Omit<LocalUpstreamExportChunk, "payload">>;
+  chunks: Array<Omit<LocalUpstreamExportChunk, "payload"> & { manifestHash: NormalizedSha256 }>;
   warnings: UpstreamTransferWarning[];
   featureFlags: string[];
   manifestHash: NormalizedSha256;
@@ -133,7 +135,8 @@ export function cloudUpstreamService(db: Db, options: { instanceId?: string } = 
           .select()
           .from(cloudUpstreamRuns)
           .where(eq(cloudUpstreamRuns.companyId, companyId))
-          .orderBy(desc(cloudUpstreamRuns.createdAt)),
+          .orderBy(desc(cloudUpstreamRuns.createdAt))
+          .limit(50),
       ]);
       return {
         connections: connectionRows.map(connectionFromRow),
@@ -170,7 +173,7 @@ export function cloudUpstreamService(db: Db, options: { instanceId?: string } = 
         sourceInstanceId,
         sourceInstanceFingerprint,
         sourcePublicKey,
-        privateKeyPem: privateKey.export({ type: "pkcs8", format: "pem" }).toString(),
+        privateKeyPem: await sealCloudUpstreamCredential(privateKey.export({ type: "pkcs8", format: "pem" }).toString()),
         tokenStatus: "pending",
         scopes: scopesFromDiscovery(discovery),
         targetStackId: target.stackId,
@@ -183,7 +186,7 @@ export function cloudUpstreamService(db: Db, options: { instanceId?: string } = 
         targetSchemaMajor: target.schemaMajor,
         targetMaxChunkBytes: target.maxChunkBytes,
         pendingState: state,
-        pendingCodeVerifier: codeVerifier,
+        pendingCodeVerifier: await sealCloudUpstreamCredential(codeVerifier),
         pendingRedirectUri: input.redirectUri,
         pendingTokenUrl: tokenUrlFromDiscovery(discovery),
       }).returning();
@@ -221,7 +224,7 @@ export function cloudUpstreamService(db: Db, options: { instanceId?: string } = 
         grantType: "authorization_code",
         code: input.code,
         redirectUri: pending.pendingRedirectUri,
-        codeVerifier: pending.pendingCodeVerifier,
+        codeVerifier: await unsealCloudUpstreamCredential(pending.pendingCodeVerifier),
       });
       const accessToken = stringField(tokenResponse, "accessToken");
       const token = objectField(tokenResponse, "token");
@@ -231,7 +234,7 @@ export function cloudUpstreamService(db: Db, options: { instanceId?: string } = 
         .set({
           tokenStatus: "connected",
           authorizedGlobalUserId: optionalString(token.globalUserId),
-          accessToken,
+          accessToken: await sealCloudUpstreamCredential(accessToken),
           tokenId: optionalString(token.id),
           tokenExpiresAt: expiresAt ? new Date(expiresAt) : null,
           pendingState: null,
@@ -246,8 +249,8 @@ export function cloudUpstreamService(db: Db, options: { instanceId?: string } = 
       return connectionFromRow(updated);
     },
 
-    preview: async (connectionId: string): Promise<CloudUpstreamPreview> => {
-      const connection = await getConnectionRow(connectionId);
+    preview: async (connectionId: string, companyId: string): Promise<CloudUpstreamPreview> => {
+      const connection = await getConnectionRow(connectionId, companyId);
       const basePreview = await localPreview(connection);
       if (!basePreview.schemaCompatible || connection.tokenStatus !== "connected") {
         return basePreview;
@@ -271,8 +274,8 @@ export function cloudUpstreamService(db: Db, options: { instanceId?: string } = 
       };
     },
 
-    createRun: async (input: { connectionId: string; retryOfRunId?: string | null }): Promise<CloudUpstreamRun> => {
-      const connection = await getConnectionRow(input.connectionId);
+    createRun: async (input: { connectionId: string; companyId: string; retryOfRunId?: string | null }): Promise<CloudUpstreamRun> => {
+      const connection = await getConnectionRow(input.connectionId, input.companyId);
       if (connection.tokenStatus !== "connected") {
         throw badRequest("Cloud upstream connection is not connected");
       }
@@ -402,15 +405,15 @@ export function cloudUpstreamService(db: Db, options: { instanceId?: string } = 
       }
     },
 
-    readRun: async (connectionId: string, runId: string): Promise<CloudUpstreamRun> => {
-      const row = await getRunRow(connectionId, runId);
+    readRun: async (connectionId: string, runId: string, companyId: string): Promise<CloudUpstreamRun> => {
+      const row = await getRunRow(connectionId, runId, companyId);
       return runFromRow(row);
     },
 
-    cancelRun: async (connectionId: string, runId: string): Promise<CloudUpstreamRun> => {
-      const row = await getRunRow(connectionId, runId);
+    cancelRun: async (connectionId: string, runId: string, companyId: string): Promise<CloudUpstreamRun> => {
+      const row = await getRunRow(connectionId, runId, companyId);
       if (row.status !== "running") return runFromRow(row);
-      const connection = await getConnectionRow(connectionId);
+      const connection = await getConnectionRow(connectionId, companyId);
       if (row.remoteRunId) {
         await remotePost(connection, `/api/upstream-import-runs/${encodeURIComponent(row.remoteRunId)}/cancel`, {}).catch(() => null);
       }
@@ -429,9 +432,10 @@ export function cloudUpstreamService(db: Db, options: { instanceId?: string } = 
     activateRunEntities: async (input: {
       connectionId: string;
       runId: string;
+      companyId: string;
       entityType: CloudUpstreamActivationEntityType;
     }): Promise<CloudUpstreamRun> => {
-      const row = await getRunRow(input.connectionId, input.runId);
+      const row = await getRunRow(input.connectionId, input.runId, input.companyId);
       assertActivationEntityType(input.entityType);
       if (row.status !== "succeeded") {
         throw badRequest("Only succeeded cloud upstream runs can activate imported entities");
@@ -470,21 +474,27 @@ export function cloudUpstreamService(db: Db, options: { instanceId?: string } = 
     if (!row) throw notFound("Company was not found");
   }
 
-  async function getConnectionRow(connectionId: string): Promise<ConnectionRow> {
+  async function getConnectionRow(connectionId: string, companyId?: string): Promise<ConnectionRow> {
     const row = await db
       .select()
       .from(cloudUpstreamConnections)
-      .where(eq(cloudUpstreamConnections.id, connectionId))
+      .where(companyId
+        ? and(eq(cloudUpstreamConnections.id, connectionId), eq(cloudUpstreamConnections.companyId, companyId))
+        : eq(cloudUpstreamConnections.id, connectionId))
       .then((rows) => rows[0]);
     if (!row) throw notFound("Cloud upstream connection was not found");
     return row;
   }
 
-  async function getRunRow(connectionId: string, runId: string): Promise<RunRow> {
+  async function getRunRow(connectionId: string, runId: string, companyId: string): Promise<RunRow> {
     const row = await db
       .select()
       .from(cloudUpstreamRuns)
-      .where(and(eq(cloudUpstreamRuns.id, runId), eq(cloudUpstreamRuns.connectionId, connectionId)))
+      .where(and(
+        eq(cloudUpstreamRuns.id, runId),
+        eq(cloudUpstreamRuns.connectionId, connectionId),
+        eq(cloudUpstreamRuns.companyId, companyId),
+      ))
       .then((rows) => rows[0]);
     if (!row) throw notFound("Cloud upstream run was not found");
     return row;
@@ -596,11 +606,51 @@ async function fetchDiscovery(remoteUrl: string): Promise<Record<string, unknown
   if (stackId) {
     discoveryUrl.searchParams.set("stackId", stackId);
   }
-  const response = await fetch(discoveryUrl);
+  const response = await fetchWithTimeout(discoveryUrl, undefined, DISCOVERY_FETCH_TIMEOUT_MS);
   if (!response.ok) {
     throw badRequest(`Cloud upstream discovery failed: ${response.status}`);
   }
   return await response.json() as Record<string, unknown>;
+}
+
+export async function reconcileCloudUpstreamRunsOnStartup(db: Db, now = new Date()): Promise<{ reconciled: number }> {
+  const runningRows = await db
+    .select()
+    .from(cloudUpstreamRuns)
+    .where(eq(cloudUpstreamRuns.status, "running"));
+  if (runningRows.length === 0) return { reconciled: 0 };
+
+  for (const row of runningRows) {
+    const report = asRecord(row.report);
+    await db
+      .update(cloudUpstreamRuns)
+      .set({
+        status: "failed",
+        activeStep: row.activeStep,
+        progressPercent: 100,
+        completedAt: now,
+        updatedAt: now,
+        events: [
+          ...safeRunEvents(row.events),
+          event(
+            now.toISOString(),
+            cloudUpstreamStep(row.activeStep),
+            "failed",
+            "Marked failed on server startup because the previous process stopped while the cloud upstream run was in progress.",
+          ),
+        ],
+        report: {
+          ...report,
+          error: optionalString(report.error) ?? "orphaned_running_run",
+          errorMessage: optionalString(report.errorMessage)
+            ?? "The server restarted while this cloud upstream run was running, so Paperclip marked it failed instead of leaving it stuck.",
+          reconciledAt: now.toISOString(),
+        },
+      })
+      .where(eq(cloudUpstreamRuns.id, row.id));
+  }
+
+  return { reconciled: runningRows.length };
 }
 
 function firstPathSegment(pathname: string): string | null {
@@ -816,32 +866,21 @@ function buildLocalUpstreamExportBundle(input: {
     idempotencyKey: input.idempotencyKey,
     generatedAt: new Date(0).toISOString(),
     entityCount: entities.length,
-    perEntityTypeCounts: countEntityTypesForManifest(entities),
     entities: entities.map((entity) => entity.record),
-    chunks: chunksWithoutManifestHash.map(({ payload: _payload, manifestHash: _manifestHash, ...chunk }) => chunk),
+    chunks: chunksWithoutManifestHash.map(({ payload: _payload, ...chunk }) => chunk),
     warnings: input.warnings ?? [],
     featureFlags: (input.featureFlags ?? ["cloud_sync"]).slice().sort(),
   };
   const manifestHash = normalizedContentHash(manifestWithoutHash);
-  const chunks = chunksWithoutManifestHash.map((chunk) => ({ ...chunk, manifestHash }));
   return {
     manifest: {
       ...manifestWithoutHash,
-      chunks: chunks.map(({ payload: _payload, ...chunk }) => chunk),
+      chunks: chunksWithoutManifestHash.map(({ payload: _payload, ...chunk }) => ({ ...chunk, manifestHash })),
       manifestHash,
     },
     entities,
-    chunks,
+    chunks: chunksWithoutManifestHash,
   };
-}
-
-function countEntityTypesForManifest(entities: LocalUpstreamExportEntity[]): Record<string, number> {
-  const counts: Record<string, number> = {};
-  for (const entity of entities) {
-    const entityType = entity.record.key.sourceEntityType;
-    counts[entityType] = (counts[entityType] ?? 0) + 1;
-  }
-  return counts;
 }
 
 function buildLocalChunks(entities: LocalUpstreamExportEntity[], maxEntitiesPerChunk: number): LocalUpstreamExportChunk[] {
@@ -864,36 +903,37 @@ function buildLocalChunks(entities: LocalUpstreamExportEntity[], maxEntitiesPerC
       totalChunks: groups.length,
       byteLength: Buffer.byteLength(canonicalJson(payload)),
       sha256: normalizedContentHash(payload),
-      manifestHash: "sha256:" as NormalizedSha256,
       payload,
     };
   });
 }
 
 async function remoteGet(connection: ConnectionRow, path: string): Promise<unknown> {
-  const response = await fetch(`${connection.targetOrigin}${path}`, {
+  const response = await fetchWithTimeout(`${connection.targetOrigin}${path}`, {
     method: "GET",
-    headers: proofHeaders(connection, "GET", path),
-  });
+    headers: await proofHeaders(connection, "GET", path),
+  }, REMOTE_FETCH_TIMEOUT_MS);
   return parseRemoteResponse(response);
 }
 
 async function remotePost(connection: ConnectionRow, path: string, body: unknown): Promise<unknown> {
-  const response = await fetch(`${connection.targetOrigin}${path}`, {
+  const response = await fetchWithTimeout(`${connection.targetOrigin}${path}`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      ...proofHeaders(connection, "POST", path),
+      ...await proofHeaders(connection, "POST", path),
     },
     body: JSON.stringify(body),
-  });
+  }, REMOTE_FETCH_TIMEOUT_MS);
   return parseRemoteResponse(response);
 }
 
-function proofHeaders(connection: ConnectionRow, method: string, pathAndSearch: string): Record<string, string> {
+async function proofHeaders(connection: ConnectionRow, method: string, pathAndSearch: string): Promise<Record<string, string>> {
   if (!connection.accessToken || !connection.tokenId) {
     throw badRequest("Cloud upstream connection is missing an import token");
   }
+  const accessToken = await unsealCloudUpstreamCredential(connection.accessToken);
+  const privateKeyPem = await unsealCloudUpstreamCredential(connection.privateKeyPem);
   const timestamp = new Date().toISOString();
   const nonce = crypto.randomUUID();
   const payload = [
@@ -906,14 +946,14 @@ function proofHeaders(connection: ConnectionRow, method: string, pathAndSearch: 
     nonce,
   ].join("\n");
   return {
-    Authorization: `Bearer ${connection.accessToken}`,
+    Authorization: `Bearer ${accessToken}`,
     "X-Paperclip-Upstream-Source-Instance-Id": connection.sourceInstanceId,
     "X-Paperclip-Upstream-Proof-Timestamp": timestamp,
     "X-Paperclip-Upstream-Proof-Nonce": nonce,
     "X-Paperclip-Upstream-Proof-Signature": sign(
       null,
       Buffer.from(payload, "utf8"),
-      connection.privateKeyPem,
+      privateKeyPem,
     ).toString("base64url"),
   };
 }
@@ -928,6 +968,32 @@ async function parseRemoteResponse(response: Response): Promise<unknown> {
     throw badRequest(message, parsed);
   }
   return parsed;
+}
+
+async function fetchWithTimeout(input: RequestInfo | URL, init: RequestInit | undefined, timeoutMs: number): Promise<Response> {
+  return fetch(input, {
+    ...init,
+    signal: AbortSignal.timeout(timeoutMs),
+  });
+}
+
+export async function sealCloudUpstreamCredential(value: string): Promise<string> {
+  const prepared = await localEncryptedProvider.createSecret({ value });
+  return `${CLOUD_CREDENTIAL_PREFIX}${JSON.stringify(prepared.material)}`;
+}
+
+export async function unsealCloudUpstreamCredential(value: string): Promise<string> {
+  if (!value.startsWith(CLOUD_CREDENTIAL_PREFIX)) return value;
+  const encoded = value.slice(CLOUD_CREDENTIAL_PREFIX.length);
+  const parsed = safeParseJson(encoded);
+  const material = optionalObject(parsed);
+  if (!material) {
+    throw badRequest("Invalid encrypted cloud upstream credential material");
+  }
+  return localEncryptedProvider.resolveVersion({
+    material,
+    externalRef: null,
+  });
 }
 
 export function cloudUpstreamRemoteFailureReport(error: unknown): {
@@ -957,11 +1023,11 @@ function remoteErrorBody(details: unknown): { error?: string; message?: string }
 }
 
 async function postJson<T>(url: string, body: unknown): Promise<T> {
-  const response = await fetch(url, {
+  const response = await fetchWithTimeout(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
-  });
+  }, DISCOVERY_FETCH_TIMEOUT_MS);
   const payload = await response.json().catch(() => null);
   if (!response.ok) {
     throw badRequest((payload as { error?: string } | null)?.error ?? `Cloud upstream request failed: ${response.status}`);
@@ -1024,6 +1090,10 @@ function eventsFromRemote(value: unknown): CloudUpstreamRunEvent[] {
       `Cloud importer ${action.replace(/_/g, " ")}${index >= 0 ? "." : "."}`,
     );
   });
+}
+
+function safeRunEvents(value: unknown): CloudUpstreamRunEvent[] {
+  return Array.isArray(value) ? value as CloudUpstreamRunEvent[] : [];
 }
 
 function assertActivationEntityType(value: string): asserts value is CloudUpstreamActivationEntityType {
