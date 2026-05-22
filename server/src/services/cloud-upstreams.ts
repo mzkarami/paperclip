@@ -1,5 +1,5 @@
 import crypto, { sign } from "node:crypto";
-import { and, count, desc, eq } from "drizzle-orm";
+import { and, count, desc, eq, sql } from "drizzle-orm";
 import type {
   CloudUpstreamConnectStartResponse,
   CloudUpstreamActivationDecision,
@@ -28,7 +28,7 @@ import {
   projects,
   routines,
 } from "@paperclipai/db";
-import { badRequest, HttpError, notFound } from "../errors.js";
+import { badRequest, conflict, HttpError, notFound } from "../errors.js";
 import { companyPortabilityService } from "./company-portability.js";
 import { localEncryptedProvider } from "../secrets/local-encrypted-provider.js";
 
@@ -279,6 +279,7 @@ export function cloudUpstreamService(db: Db, options: { instanceId?: string } = 
       if (connection.tokenStatus !== "connected") {
         throw badRequest("Cloud upstream connection is not connected");
       }
+      await assertNoRunningRun(input.connectionId, input.companyId, db);
       const preview = await localPreview(connection);
       if (!preview.schemaCompatible) {
         throw badRequest("Cloud stack schema is not compatible with this local Paperclip version");
@@ -295,26 +296,33 @@ export function cloudUpstreamService(db: Db, options: { instanceId?: string } = 
           ? [event(now.toISOString(), "push", "retrying", `Retrying run ${input.retryOfRunId} with the same import ledger idempotency key.`)]
           : []),
       ];
-      const [created] = await db.insert(cloudUpstreamRuns).values({
-        id: runId,
-        connectionId: connection.id,
-        companyId: connection.companyId,
-        status: "running",
-        activeStep: "push",
-        progressPercent: 45,
-        dryRun: false,
-        retryOfRunId: input.retryOfRunId ?? null,
-        summary: preview.summary,
-        warnings: preview.warnings,
-        conflicts: preview.conflicts,
-        events: initialEvents,
-        report: {},
-        idempotencyKey: bundle.manifest.idempotencyKey,
-        manifestHash: bundle.manifest.manifestHash,
-        targetUrl: connection.targetOrigin,
-        createdAt: now,
-        updatedAt: now,
-      }).returning();
+      const created = await db.transaction(async (tx) => {
+        await tx.execute(
+          sql`select ${cloudUpstreamConnections.id} from ${cloudUpstreamConnections} where ${cloudUpstreamConnections.id} = ${connection.id} and ${cloudUpstreamConnections.companyId} = ${connection.companyId} for update`,
+        );
+        await assertNoRunningRun(input.connectionId, input.companyId, tx);
+        const [row] = await tx.insert(cloudUpstreamRuns).values({
+          id: runId,
+          connectionId: connection.id,
+          companyId: connection.companyId,
+          status: "running",
+          activeStep: "push",
+          progressPercent: 45,
+          dryRun: false,
+          retryOfRunId: input.retryOfRunId ?? null,
+          summary: preview.summary,
+          warnings: preview.warnings,
+          conflicts: preview.conflicts,
+          events: initialEvents,
+          report: {},
+          idempotencyKey: bundle.manifest.idempotencyKey,
+          manifestHash: bundle.manifest.manifestHash,
+          targetUrl: connection.targetOrigin,
+          createdAt: now,
+          updatedAt: now,
+        }).returning();
+        return row;
+      });
       if (!created) throw badRequest("Failed to create cloud upstream run");
 
       try {
@@ -498,6 +506,25 @@ export function cloudUpstreamService(db: Db, options: { instanceId?: string } = 
       .then((rows) => rows[0]);
     if (!row) throw notFound("Cloud upstream run was not found");
     return row;
+  }
+
+  async function assertNoRunningRun(
+    connectionId: string,
+    companyId: string,
+    database: Pick<Db, "select">,
+  ) {
+    const [running] = await database
+      .select({ id: cloudUpstreamRuns.id })
+      .from(cloudUpstreamRuns)
+      .where(and(
+        eq(cloudUpstreamRuns.connectionId, connectionId),
+        eq(cloudUpstreamRuns.companyId, companyId),
+        eq(cloudUpstreamRuns.status, "running"),
+      ))
+      .limit(1);
+    if (running) {
+      throw conflict("A cloud upstream run is already running for this connection", { runId: running.id });
+    }
   }
 
   async function updateRun(runId: string, patch: Partial<typeof cloudUpstreamRuns.$inferInsert>): Promise<CloudUpstreamRun> {

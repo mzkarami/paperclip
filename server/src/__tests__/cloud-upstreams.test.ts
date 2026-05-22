@@ -206,6 +206,22 @@ describeEmbeddedPostgres("cloud upstream persistence", () => {
     expect(succeeded?.status).toBe("succeeded");
   });
 
+  it("rejects a new run when the connection already has a running run", async () => {
+    const companyId = randomUUID();
+    const connectionId = randomUUID();
+    const runningRunId = randomUUID();
+    await seedCompany(companyId);
+    await db.insert(cloudUpstreamConnections).values(cloudConnectionRow({ id: connectionId, companyId }));
+    await db.insert(cloudUpstreamRuns).values(
+      cloudRunRow({ id: runningRunId, connectionId, companyId, status: "running" }),
+    );
+
+    await expect(cloudUpstreamService(db).createRun({ connectionId, companyId })).rejects.toMatchObject({
+      status: 409,
+      details: { runId: runningRunId },
+    });
+  });
+
   async function seedCompany(companyId: string) {
     await db.insert(companies).values({
       id: companyId,
@@ -221,6 +237,30 @@ function jsonResponse(body: unknown): Response {
     status: 200,
     headers: { "Content-Type": "application/json" },
   });
+}
+
+function cloudConnectionRow(input: { id: string; companyId: string }) {
+  return {
+    id: input.id,
+    companyId: input.companyId,
+    remoteUrl: "https://cloud.example.test",
+    sourceInstanceId: "source-1",
+    sourceInstanceFingerprint: "sha256:test",
+    sourcePublicKey: "public-key",
+    privateKeyPem: "legacy-private-key",
+    tokenStatus: "connected",
+    scopes: ["upstream_import:write"],
+    authorizedGlobalUserId: "user-1",
+    accessToken: "legacy-token",
+    tokenId: "token-1",
+    targetStackId: "stack-1",
+    targetCompanyId: "cloud-company-1",
+    targetOrigin: "https://cloud.example.test",
+    targetPrimaryHost: "cloud.example.test",
+    targetProduct: "Paperclip Cloud",
+    targetSchemaMajor: 1,
+    targetMaxChunkBytes: 8192,
+  };
 }
 
 function cloudRunRow(input: {
