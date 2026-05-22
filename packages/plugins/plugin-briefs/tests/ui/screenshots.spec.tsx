@@ -5,14 +5,41 @@
  *
  * Skipped by default — set `BRIEFS_CAPTURE_SCREENSHOTS=1` to opt in.
  *
- * The flag avoids dragging Playwright into the regular fast unit-test run while
- * still letting CI / agents capture deterministic fixtures from the same view
- * components the host renders.
+ * Mounts the real `<BriefingPage>` component (the same React tree the host
+ * renders) so the captured PNGs reflect MobileTabs, Legend, and the live
+ * responsive CSS — not a hand-rolled approximation. The Paperclip plugin SDK
+ * is mocked so `usePluginData("page", …)` returns the gallery fixture.
  */
 import path from "node:path";
 import fs from "node:fs/promises";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { afterAll, describe, expect, it, vi } from "vitest";
+
+import type { BriefCard, BriefPreferences } from "../../src/contracts.js";
+import { gallery } from "./fixtures.js";
+
+type PageData = {
+  cards: BriefCard[];
+  preferences: BriefPreferences;
+  fetchedAt: string;
+};
+
+const defaultPreferences: BriefPreferences = {
+  companyId: "company-1",
+  userId: "user-1",
+  cadence: "daily",
+  retentionDays: 14,
+  doneRetentionHours: 48,
+  staleAfterDays: 7,
+  maxUnpinnedCards: 24,
+  scope: "user",
+};
+
+let mockPageData: PageData = {
+  cards: [],
+  preferences: defaultPreferences,
+  fetchedAt: "2026-05-22T10:00:00.000Z",
+};
 
 vi.mock("@paperclipai/plugin-sdk/ui", () => {
   return {
@@ -22,7 +49,12 @@ vi.mock("@paperclipai/plugin-sdk/ui", () => {
       linkProps: (to: string) => ({ href: to, onClick: () => {} }),
     }),
     usePluginAction: () => vi.fn(async () => ({ ok: true })),
-    usePluginData: () => ({ data: null, loading: false, error: null, refresh: () => {} }),
+    usePluginData: (key: string) => {
+      if (key === "page") {
+        return { data: mockPageData, loading: false, error: null, refresh: () => {} };
+      }
+      return { data: null, loading: false, error: null, refresh: () => {} };
+    },
     usePluginToast: () => vi.fn(),
     useHostLocation: () => ({ pathname: "/PAP/briefs", search: "", hash: "" }),
     usePluginStream: () => ({ events: [], lastEvent: null, connecting: false, connected: false, error: null, close: () => {} }),
@@ -30,9 +62,7 @@ vi.mock("@paperclipai/plugin-sdk/ui", () => {
 });
 
 import { renderToStaticMarkup } from "react-dom/server";
-import { BriefCardView } from "../../src/ui/app.js";
-import { groupCardsIntoSections } from "../../src/ui/view-model.js";
-import { gallery } from "./fixtures.js";
+import { BriefingPage } from "../../src/ui/app.js";
 
 const ENABLED = process.env.BRIEFS_CAPTURE_SCREENSHOTS === "1";
 
@@ -44,72 +74,53 @@ const outDir = path.resolve(repoRoot, "docs/pr-screenshots/pap-9963");
 const desktopWidth = 1440;
 const mobileWidth = 390;
 
-function staticPage({ cards, viewportWidth }: { cards: ReturnType<typeof gallery>; viewportWidth: number }) {
+const hostContext = {
+  companyId: "company-1",
+  companyPrefix: "PAP",
+  projectId: null,
+  entityId: null,
+  entityType: null,
+  userId: "user-1",
+} as const;
+
+function renderPageHtml({ cards, viewportWidth }: { cards: BriefCard[]; viewportWidth: number }): string {
+  mockPageData = { cards, preferences: defaultPreferences, fetchedAt: "2026-05-22T10:00:00.000Z" };
   const isMobile = viewportWidth < 700;
-  const sections = groupCardsIntoSections(cards);
-  const visibleSections = isMobile
-    ? sections.filter((section) => section.cards.length > 0).slice(0, 1).concat(sections.slice(1))
-    : sections;
-  const active = cards.filter((c) => !c.hidden);
-  const pinned = active.filter((c) => c.pinned).length;
+  // BriefingPage injects the responsive stylesheet via document.head on mount.
+  // SSR doesn't run that side effect, so we inline the same rules in the page
+  // <style>. Keep these in sync with the rules in src/ui/app.tsx.
+  const inlineCss = `
+    :root {
+      --background: oklch(0.145 0 0);
+      --foreground: oklch(0.985 0 0);
+      --card: oklch(0.205 0 0);
+      --border: oklch(0.269 0 0);
+      --muted-foreground: oklch(0.708 0 0);
+      --primary: oklch(0.985 0 0);
+      --primary-foreground: oklch(0.205 0 0);
+      --secondary: oklch(0.269 0 0);
+      --accent: oklch(0.269 0 0);
+    }
+    html, body { background: var(--background); color: var(--foreground); margin: 0; min-height: 100vh; }
+    body { font-family: ui-sans-serif, system-ui, -apple-system, sans-serif; }
+    a { color: inherit; }
+    @media (max-width: 700px) {
+      [data-briefs-mobile-tabs] { display: flex !important; }
+      [data-briefs-section] > header { display: none !important; }
+      [data-briefs-section][data-mobile-hidden="true"] { display: none !important; }
+      [data-briefs-grid] { grid-template-columns: 1fr !important; }
+      [data-briefs-page-header] > [data-briefs-page-meta] { flex-basis: 100% !important; order: 2 !important; }
+    }
+  `;
+  const body = renderToStaticMarkup(<BriefingPage context={hostContext as never} />);
   return `<!doctype html>
   <html lang="en">
     <head>
       <meta charset="utf-8" />
       <title>Briefing — ${isMobile ? "mobile" : "desktop"}</title>
-      <style>
-        :root {
-          --background: oklch(0.145 0 0);
-          --foreground: oklch(0.985 0 0);
-          --card: oklch(0.205 0 0);
-          --border: oklch(0.269 0 0);
-          --muted-foreground: oklch(0.708 0 0);
-          --primary: oklch(0.985 0 0);
-          --primary-foreground: oklch(0.205 0 0);
-          --secondary: oklch(0.269 0 0);
-          --accent: oklch(0.269 0 0);
-        }
-        html, body { background: var(--background); color: var(--foreground); margin: 0; min-height: 100vh; }
-        body { font-family: ui-sans-serif, system-ui, -apple-system, sans-serif; }
-        a { color: inherit; }
-        @media (max-width: 700px) {
-          [data-briefs-mobile-tabs] { display: flex !important; }
-          [data-briefs-section] > header { display: none; }
-          [data-briefs-section][data-mobile-hidden="true"] { display: none; }
-          [data-briefs-grid] { grid-template-columns: 1fr !important; }
-        }
-      </style>
+      <style>${inlineCss}</style>
     </head>
-    <body>
-      <div style="font-family: ui-sans-serif, system-ui, -apple-system, sans-serif; color: var(--foreground); padding: 20px clamp(12px, 4vw, 32px); max-width: 1280px; margin: 0 auto; min-height: 100vh;">
-        <header style="display: flex; flex-wrap: wrap; align-items: baseline; gap: 12px; margin-bottom: 6px;">
-          <h1 style="margin: 0; font-size: 22px; font-weight: 600;">Briefing</h1>
-          <div style="flex: 1; min-width: 0; font-size: 12px; color: var(--muted-foreground);">${active.length} active · ${pinned} pinned · refreshed just now</div>
-          <div style="display: flex; gap: 6px; align-items: center;">
-            <button style="padding: 6px 10px; border-radius: 6px; border: 1px solid var(--border); background: var(--card); color: var(--foreground); font-size: 12px;">Preferences</button>
-            <button style="padding: 6px 10px; border-radius: 6px; border: 1px solid var(--border); background: var(--card); color: var(--foreground); font-size: 12px;">Refresh</button>
-          </div>
-        </header>
-        <p style="margin: 0; margin-bottom: 18px; font-size: 13px; color: var(--muted-foreground);">Durable cards for areas of work that involve you. Pin the ones you always want to see.</p>
-        ${active.length === 0
-          ? `<div data-briefs-empty style="padding: 40px 24px; border: 1px dashed var(--border); border-radius: 10px; text-align: center; color: var(--muted-foreground);">
-              <div style="font-size: 15px; color: var(--foreground); font-weight: 600; margin-bottom: 4px;">No briefs yet</div>
-              <div style="font-size: 13px;">Cards appear here once the Briefing Analyst picks up recent work. Pinned cards never expire.</div>
-            </div>`
-          : visibleSections.map((section) => section.cards.length === 0 ? "" : `
-            <section data-briefs-section="${section.key}" style="display: flex; flex-direction: column; gap: 12px; margin-bottom: 24px;">
-              <header style="display: flex; align-items: center; gap: 10px;">
-                <h2 style="margin: 0; font-size: 12px; letter-spacing: 0.6px; color: var(--muted-foreground); text-transform: uppercase; font-weight: 600;">${section.label}</h2>
-                <span style="font-size: 12px; color: var(--muted-foreground);">${section.cards.length}</span>
-                <span style="flex: 1; border-bottom: 1px dashed var(--border);"></span>
-              </header>
-              <div data-briefs-grid style="display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 360px), 1fr)); gap: 12px;">
-                ${section.cards.map((card) => renderToStaticMarkup(<BriefCardView card={card} onChanged={() => {}} />)).join("")}
-              </div>
-            </section>
-          `).join("")}
-      </div>
-    </body>
+    <body>${body}</body>
   </html>`;
 }
 
@@ -132,9 +143,9 @@ describe.skipIf(!ENABLED)("Briefs screenshots", () => {
     const tmpDir = await fs.mkdtemp(path.join(__dirname, ".tmp-briefs-"));
     const cards = gallery();
 
-    const desktopHtml = staticPage({ cards, viewportWidth: desktopWidth });
-    const mobileHtml = staticPage({ cards, viewportWidth: mobileWidth });
-    const emptyHtml = staticPage({ cards: [], viewportWidth: desktopWidth });
+    const desktopHtml = renderPageHtml({ cards, viewportWidth: desktopWidth });
+    const mobileHtml = renderPageHtml({ cards, viewportWidth: mobileWidth });
+    const emptyHtml = renderPageHtml({ cards: [], viewportWidth: desktopWidth });
 
     const desktopFile = path.join(tmpDir, "briefing-desktop.html");
     const mobileFile = path.join(tmpDir, "briefing-mobile.html");

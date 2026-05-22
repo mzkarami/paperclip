@@ -182,9 +182,9 @@ function PageShell({ children, meta, action, preferences }: {
 }) {
   return (
     <div style={{ fontFamily: fontStack, color: tokens.fg, padding: "20px clamp(12px, 4vw, 32px)", maxWidth: 1280, margin: "0 auto", minHeight: "100vh" }}>
-      <header style={{ display: "flex", flexWrap: "wrap", alignItems: "baseline", gap: 12, marginBottom: 6 }}>
+      <header data-briefs-page-header style={{ display: "flex", flexWrap: "wrap", alignItems: "baseline", gap: 12, marginBottom: 6 }}>
         <h1 style={{ margin: 0, fontSize: 22, fontWeight: 600, letterSpacing: -0.2 }}>Briefing</h1>
-        <div style={{ flex: 1, minWidth: 0, fontSize: 12, color: tokens.muted, overflow: "hidden", textOverflow: "ellipsis" }}>{meta}</div>
+        <div data-briefs-page-meta style={{ flex: 1, minWidth: 0, fontSize: 12, color: tokens.muted, overflow: "hidden", textOverflow: "ellipsis" }}>{meta}</div>
         <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
           {preferences}
           {action}
@@ -946,12 +946,16 @@ function ErrorPanel({ message, onRetry }: { message: string; onRetry: () => void
 if (typeof document !== "undefined" && !document.getElementById("briefs-plugin-styles")) {
   const style = document.createElement("style");
   style.id = "briefs-plugin-styles";
+  // !important is required so these rules win against the inline
+  // style attributes set on <section data-briefs-section> and its <header>;
+  // attribute-selector specificity (0,1,1) loses to inline (1,0,0,0) otherwise.
   style.textContent = `
     @media (max-width: 700px) {
       [data-briefs-mobile-tabs] { display: flex !important; }
-      [data-briefs-section] > header { display: none; }
-      [data-briefs-section][data-mobile-hidden="true"] { display: none; }
+      [data-briefs-section] > header { display: none !important; }
+      [data-briefs-section][data-mobile-hidden="true"] { display: none !important; }
       [data-briefs-grid] { grid-template-columns: 1fr !important; }
+      [data-briefs-page-header] > [data-briefs-page-meta] { flex-basis: 100% !important; order: 2 !important; }
     }
   `;
   document.head.appendChild(style);
