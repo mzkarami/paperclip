@@ -1,14 +1,17 @@
 import { Router, type Request } from "express";
 import type { Db } from "@paperclipai/db";
 import {
+  catalogSkillListQuerySchema,
   companySkillCreateSchema,
   companySkillFileUpdateSchema,
   companySkillImportSchema,
+  companySkillInstallCatalogSchema,
   companySkillProjectScanRequestSchema,
 } from "@paperclipai/shared";
 import { trackSkillImported } from "@paperclipai/shared/telemetry";
 import { validate } from "../middleware/validate.js";
 import { accessService, agentService, companySkillService, logActivity } from "../services/index.js";
+import { getCatalogSkillOrThrow, listCatalogSkills, readCatalogSkillFile } from "../services/skills-catalog.js";
 import { forbidden } from "../errors.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
 import { getTelemetryClient } from "../telemetry.js";
@@ -52,6 +55,12 @@ export function companySkillRoutes(db: Db) {
     return skill.key;
   }
 
+  function firstQueryString(value: unknown): string | undefined {
+    if (typeof value === "string") return value;
+    if (Array.isArray(value) && typeof value[0] === "string") return value[0];
+    return undefined;
+  }
+
   async function assertCanMutateCompanySkills(req: Request, companyId: string) {
     assertCompanyAccess(req, companyId);
 
@@ -80,6 +89,26 @@ export function companySkillRoutes(db: Db) {
 
     throw forbidden("Missing permission: can create agents");
   }
+
+  router.get("/skills/catalog", async (req, res) => {
+    const query = catalogSkillListQuerySchema.parse({
+      kind: firstQueryString(req.query.kind),
+      category: firstQueryString(req.query.category),
+      q: firstQueryString(req.query.q),
+    });
+    res.json(listCatalogSkills(query));
+  });
+
+  router.get("/skills/catalog/:catalogId/files", async (req, res) => {
+    const catalogRef = firstQueryString(req.query.ref) ?? (req.params.catalogId as string);
+    const relativePath = firstQueryString(req.query.path) ?? "SKILL.md";
+    res.json(await readCatalogSkillFile(catalogRef, relativePath));
+  });
+
+  router.get("/skills/catalog/:catalogId", async (req, res) => {
+    const catalogRef = firstQueryString(req.query.ref) ?? (req.params.catalogId as string);
+    res.json(getCatalogSkillOrThrow(catalogRef));
+  });
 
   router.get("/companies/:companyId/skills", async (req, res) => {
     const companyId = req.params.companyId as string;
@@ -224,6 +253,38 @@ export function companySkillRoutes(db: Db) {
       }
 
       res.status(201).json(result);
+    },
+  );
+
+  router.post(
+    "/companies/:companyId/skills/install-catalog",
+    validate(companySkillInstallCatalogSchema),
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      await assertCanMutateCompanySkills(req, companyId);
+      const result = await svc.installFromCatalog(companyId, req.body);
+
+      const actor = getActorInfo(req);
+      await logActivity(db, {
+        companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: result.action === "created" ? "company.skill_catalog_installed" : "company.skill_catalog_updated",
+        entityType: "company_skill",
+        entityId: result.skill.id,
+        details: {
+          action: result.action,
+          catalogId: result.catalogSkill.id,
+          catalogKey: result.catalogSkill.key,
+          slug: result.skill.slug,
+          originHash: result.catalogSkill.contentHash,
+          warningCount: result.warnings.length,
+        },
+      });
+
+      res.status(result.action === "created" ? 201 : 200).json(result);
     },
   );
 

@@ -60,6 +60,14 @@ export type {
   CompanySkillCreateRequest,
   CompanySkillFileDetail,
   CompanySkillFileUpdateRequest,
+  CatalogSkillKind,
+  CatalogSkillFileKind,
+  CatalogSkillFile,
+  CatalogSkill,
+  CatalogSkillListQuery,
+  CatalogSkillFileDetail,
+  CompanySkillInstallCatalogRequest,
+  CompanySkillInstallCatalogResult,
 } from "./company-skill.js";
 export type {
   AgentSkillSyncMode,

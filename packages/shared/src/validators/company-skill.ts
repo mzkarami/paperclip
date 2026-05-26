@@ -131,7 +131,66 @@ export const companySkillFileUpdateSchema = z.object({
   content: z.string(),
 });
 
+export const catalogSkillKindSchema = z.enum(["bundled", "optional"]);
+
+export const catalogSkillFileSchema = z.object({
+  path: z.string().min(1),
+  kind: z.enum(["skill", "markdown", "reference", "script", "asset", "other"]),
+  sizeBytes: z.number().int().nonnegative(),
+  sha256: z.string().min(1),
+});
+
+export const catalogSkillSchema = z.object({
+  id: z.string().min(1),
+  key: z.string().min(1),
+  kind: catalogSkillKindSchema,
+  category: z.string().min(1),
+  slug: z.string().min(1),
+  name: z.string().min(1),
+  description: z.string(),
+  path: z.string().min(1),
+  entrypoint: z.literal("SKILL.md"),
+  trustLevel: companySkillTrustLevelSchema,
+  compatibility: companySkillCompatibilitySchema,
+  defaultInstall: z.boolean(),
+  recommendedForRoles: z.array(z.string()),
+  requires: z.array(z.string()),
+  tags: z.array(z.string()),
+  files: z.array(catalogSkillFileSchema),
+  contentHash: z.string().min(1),
+});
+
+export const catalogSkillListQuerySchema = z.object({
+  kind: catalogSkillKindSchema.optional(),
+  category: z.string().min(1).optional(),
+  q: z.string().min(1).optional(),
+});
+
+export const catalogSkillFileDetailSchema = z.object({
+  catalogSkillId: z.string().min(1),
+  path: z.string().min(1),
+  kind: z.enum(["skill", "markdown", "reference", "script", "asset", "other"]),
+  content: z.string(),
+  language: z.string().nullable(),
+  markdown: z.boolean(),
+});
+
+export const companySkillInstallCatalogSchema = z.object({
+  catalogSkillId: z.string().min(1),
+  slug: z.string().min(1).nullable().optional(),
+  force: z.boolean().optional(),
+});
+
+export const companySkillInstallCatalogResultSchema = z.object({
+  action: z.enum(["created", "updated", "unchanged"]),
+  skill: companySkillSchema,
+  catalogSkill: catalogSkillSchema,
+  warnings: z.array(z.string()),
+});
+
 export type CompanySkillImport = z.infer<typeof companySkillImportSchema>;
 export type CompanySkillProjectScan = z.infer<typeof companySkillProjectScanRequestSchema>;
 export type CompanySkillCreate = z.infer<typeof companySkillCreateSchema>;
 export type CompanySkillFileUpdate = z.infer<typeof companySkillFileUpdateSchema>;
+export type CatalogSkillListQuery = z.infer<typeof catalogSkillListQuerySchema>;
+export type CompanySkillInstallCatalog = z.infer<typeof companySkillInstallCatalogSchema>;

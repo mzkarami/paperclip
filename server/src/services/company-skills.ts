@@ -8,6 +8,7 @@ import { companies, companySkills } from "@paperclipai/db";
 import { readPaperclipSkillSyncPreference } from "@paperclipai/adapter-utils/server-utils";
 import type { PaperclipSkillEntry } from "@paperclipai/adapter-utils/server-utils";
 import type {
+  CatalogSkill,
   CompanySkill,
   CompanySkillCreateRequest,
   CompanySkillCompatibility,
@@ -15,6 +16,8 @@ import type {
   CompanySkillFileDetail,
   CompanySkillFileInventoryEntry,
   CompanySkillImportResult,
+  CompanySkillInstallCatalogRequest,
+  CompanySkillInstallCatalogResult,
   CompanySkillListItem,
   CompanySkillProjectScanConflict,
   CompanySkillProjectScanRequest,
@@ -28,10 +31,15 @@ import type {
 } from "@paperclipai/shared";
 import { normalizeAgentUrlKey } from "@paperclipai/shared";
 import { resolvePaperclipInstanceRoot } from "../home-paths.js";
-import { notFound, unprocessable } from "../errors.js";
+import { conflict, notFound, unprocessable } from "../errors.js";
 import { ghFetch, gitHubApiBase, resolveRawGitHubUrl } from "./github-fetch.js";
 import { agentService } from "./agents.js";
 import { projectService } from "./projects.js";
+import {
+  getCatalogPackageMetadata,
+  getCatalogSkillOrThrow,
+  readCatalogSkillFile,
+} from "./skills-catalog.js";
 
 type CompanySkillRow = typeof companySkills.$inferSelect;
 type CompanySkillListDbRow = Pick<
@@ -133,6 +141,8 @@ type SkillSourceMeta = {
   workspaceId?: string;
   workspaceName?: string;
   workspaceCwd?: string;
+  catalogId?: string;
+  originHash?: string;
 };
 
 export type LocalSkillInventoryMode = "full" | "project_root";
@@ -2141,6 +2151,155 @@ export function companySkillService(db: Db) {
     return skillDir;
   }
 
+  async function materializeCatalogManifestSkillFiles(
+    companyId: string,
+    catalogSkill: CatalogSkill,
+    slug: string,
+  ) {
+    const catalogRoot = path.resolve(resolveManagedSkillsRoot(companyId), "__catalog__");
+    const skillDir = path.resolve(catalogRoot, buildSkillRuntimeName(catalogSkill.key, slug));
+    await fs.rm(skillDir, { recursive: true, force: true });
+    await fs.mkdir(skillDir, { recursive: true });
+
+    for (const entry of catalogSkill.files) {
+      const detail = await readCatalogSkillFile(catalogSkill.id, entry.path);
+      const targetPath = path.resolve(skillDir, entry.path);
+      if (targetPath !== skillDir && !targetPath.startsWith(`${skillDir}${path.sep}`)) {
+        throw unprocessable(`Catalog file path is invalid: ${entry.path}`);
+      }
+      await fs.mkdir(path.dirname(targetPath), { recursive: true });
+      await fs.writeFile(targetPath, detail.content, "utf8");
+    }
+
+    return skillDir;
+  }
+
+  function buildCatalogSkillMetadata(
+    catalogSkill: CatalogSkill,
+    existing: CompanySkill | null,
+  ) {
+    const packageMetadata = getCatalogPackageMetadata();
+    const existingMetadata = existing && isPlainRecord(existing.metadata) ? existing.metadata : {};
+    return {
+      ...existingMetadata,
+      skillKey: catalogSkill.key,
+      sourceKind: "catalog",
+      catalogId: catalogSkill.id,
+      catalogKey: catalogSkill.key,
+      catalogKind: catalogSkill.kind,
+      catalogCategory: catalogSkill.category,
+      catalogPath: catalogSkill.path,
+      packageName: packageMetadata.packageName,
+      packageVersion: packageMetadata.packageVersion,
+      originHash: catalogSkill.contentHash,
+      originVersion: packageMetadata.packageVersion,
+      userModifiedAt: existingMetadata.userModifiedAt ?? null,
+      updateHoldReason: existingMetadata.updateHoldReason ?? null,
+    };
+  }
+
+  function assertCatalogSkillInstallable(catalogSkill: CatalogSkill) {
+    if (catalogSkill.compatibility !== "compatible") {
+      throw unprocessable(`Catalog skill ${catalogSkill.id} is not compatible.`);
+    }
+    if (catalogSkill.trustLevel === "scripts_executables") {
+      throw unprocessable(
+        "Catalog skill contains executable scripts and cannot be force-installed until security review semantics allow it.",
+      );
+    }
+  }
+
+  async function installFromCatalog(
+    companyId: string,
+    input: CompanySkillInstallCatalogRequest,
+  ): Promise<CompanySkillInstallCatalogResult> {
+    await ensureSkillInventoryCurrent(companyId);
+    const catalogSkill = getCatalogSkillOrThrow(input.catalogSkillId);
+    assertCatalogSkillInstallable(catalogSkill);
+
+    const slug = normalizeSkillSlug(input.slug ?? catalogSkill.slug);
+    if (!slug) {
+      throw unprocessable("Catalog skill slug is invalid.");
+    }
+
+    const existingSkills = await listFull(companyId);
+    const existingByKey = existingSkills.find((skill) => skill.key === catalogSkill.key) ?? null;
+    const slugConflict = existingSkills.find((skill) => skill.slug === slug && skill.id !== existingByKey?.id) ?? null;
+    if (slugConflict) {
+      throw conflict(`Skill slug "${slug}" is already used by ${slugConflict.key}.`);
+    }
+
+    if (existingByKey) {
+      const metadata = getSkillMeta(existingByKey);
+      const existingCatalogId = asString(metadata.catalogId);
+      const sameCatalog = existingByKey.sourceType === "catalog" && existingCatalogId === catalogSkill.id;
+      const catalogManaged = existingByKey.sourceType === "catalog";
+      if (!sameCatalog && (!catalogManaged || !input.force)) {
+        throw conflict(
+          `Skill key "${catalogSkill.key}" is already used by ${existingByKey.sourceLocator ?? existingByKey.slug}.`,
+        );
+      }
+    }
+
+    const materializedDir = await materializeCatalogManifestSkillFiles(companyId, catalogSkill, slug);
+    const markdown = (await readCatalogSkillFile(catalogSkill.id, catalogSkill.entrypoint)).content;
+    const metadata = buildCatalogSkillMetadata(catalogSkill, existingByKey);
+    const values = {
+      companyId,
+      key: catalogSkill.key,
+      slug,
+      name: catalogSkill.name,
+      description: catalogSkill.description,
+      markdown,
+      sourceType: "catalog",
+      sourceLocator: materializedDir,
+      sourceRef: catalogSkill.contentHash,
+      trustLevel: catalogSkill.trustLevel,
+      compatibility: catalogSkill.compatibility,
+      fileInventory: serializeFileInventory(catalogSkill.files.map((entry) => ({
+        path: entry.path,
+        kind: entry.kind,
+      }))),
+      metadata,
+      updatedAt: new Date(),
+    };
+
+    if (
+      existingByKey
+      && existingByKey.sourceType === "catalog"
+      && existingByKey.slug === slug
+      && asString(getSkillMeta(existingByKey).originHash) === catalogSkill.contentHash
+    ) {
+      return {
+        action: "unchanged",
+        skill: existingByKey,
+        catalogSkill,
+        warnings: [],
+      };
+    }
+
+    const row = existingByKey
+      ? await db
+        .update(companySkills)
+        .set(values)
+        .where(eq(companySkills.id, existingByKey.id))
+        .returning()
+        .then((rows) => rows[0] ?? null)
+      : await db
+        .insert(companySkills)
+        .values(values)
+        .returning()
+        .then((rows) => rows[0] ?? null);
+
+    if (!row) throw notFound("Failed to persist company skill");
+    return {
+      action: existingByKey ? "updated" : "created",
+      skill: toCompanySkill(row),
+      catalogSkill,
+      warnings: [],
+    };
+  }
+
   async function materializeRuntimeSkillFiles(companyId: string, skill: CompanySkill) {
     const runtimeRoot = path.resolve(resolveManagedSkillsRoot(companyId), "__runtime__");
     const skillDir = path.resolve(runtimeRoot, buildSkillRuntimeName(skill.key, skill.slug));
@@ -2470,6 +2629,7 @@ export function companySkillService(db: Db) {
     createLocalSkill,
     deleteSkill,
     importFromSource,
+    installFromCatalog,
     scanProjectWorkspaces,
     importPackageFiles,
     installUpdate,

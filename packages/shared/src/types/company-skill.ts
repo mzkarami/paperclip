@@ -155,3 +155,62 @@ export interface CompanySkillFileUpdateRequest {
   path: string;
   content: string;
 }
+
+export type CatalogSkillKind = "bundled" | "optional";
+
+export type CatalogSkillFileKind = CompanySkillFileInventoryEntry["kind"];
+
+export interface CatalogSkillFile {
+  path: string;
+  kind: CatalogSkillFileKind;
+  sizeBytes: number;
+  sha256: string;
+}
+
+export interface CatalogSkill {
+  id: string;
+  key: string;
+  kind: CatalogSkillKind;
+  category: string;
+  slug: string;
+  name: string;
+  description: string;
+  path: string;
+  entrypoint: "SKILL.md";
+  trustLevel: CompanySkillTrustLevel;
+  compatibility: CompanySkillCompatibility;
+  defaultInstall: boolean;
+  recommendedForRoles: string[];
+  requires: string[];
+  tags: string[];
+  files: CatalogSkillFile[];
+  contentHash: string;
+}
+
+export interface CatalogSkillListQuery {
+  kind?: CatalogSkillKind;
+  category?: string;
+  q?: string;
+}
+
+export interface CatalogSkillFileDetail {
+  catalogSkillId: string;
+  path: string;
+  kind: CatalogSkillFileKind;
+  content: string;
+  language: string | null;
+  markdown: boolean;
+}
+
+export interface CompanySkillInstallCatalogRequest {
+  catalogSkillId: string;
+  slug?: string | null;
+  force?: boolean;
+}
+
+export interface CompanySkillInstallCatalogResult {
+  action: "created" | "updated" | "unchanged";
+  skill: CompanySkill;
+  catalogSkill: CatalogSkill;
+  warnings: string[];
+}
