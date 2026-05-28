@@ -45,5 +45,14 @@ which asserts that a remote-only commit propagates to the local worktree
 through `prepareWorkspaceForSshExecution` → `restoreWorkspaceFromSshExecution`
 with no git remote configured at any point.
 
+A static check enforces the rule before runtime ever sees it:
+[`scripts/check-no-git-push.mjs`](../../scripts/check-no-git-push.mjs) scans
+adapter and runtime source (`packages/adapters/`, `packages/adapter-utils/`,
+`server/src/`, `cli/src/`) and fails the `policy` CI job if any unapproved
+`git push` invocation is added. If you are building an operator-configured
+path that legitimately must push, add a
+`// paperclip:allow-git-push: <reason>` comment on the line (or the line
+above) so the opt-in shows up in code review.
+
 For the architecture-level write-up of cross-run persistence, see
 [`docs/guides/board-operator/execution-workspaces-and-runtime-services.md`](../../docs/guides/board-operator/execution-workspaces-and-runtime-services.md#cross-run-persistence-no-remote-git-contract).
