@@ -23,7 +23,7 @@ describe("static SPA fallback HTML", () => {
     app.get(/.*/, (_req, res) => {
       res
         .status(200)
-        .set("Content-Type", "text/html")
+        .type("text/html; charset=utf-8")
         .set("Cache-Control", "no-cache")
         .end(readBrandedStaticIndexHtml(tempDir));
     });
@@ -45,5 +45,27 @@ describe("static SPA fallback HTML", () => {
     const res = await request(app).get("/PAP/issues/PAP-9939");
     expect(res.text).toContain("/assets/index-new.js");
     expect(res.text).not.toContain("/assets/index-old.js");
+    expect(res.headers["content-type"]).toContain("charset=utf-8");
+  });
+
+  it("declares UTF-8 for fallback HTML so non-ASCII UI text decodes correctly", async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-static-index-"));
+    tempDirs.push(tempDir);
+    const indexPath = path.join(tempDir, "index.html");
+    const app = express();
+    app.get(/.*/, (_req, res) => {
+      res
+        .status(200)
+        .type("text/html; charset=utf-8")
+        .set("Cache-Control", "no-cache")
+        .end(readBrandedStaticIndexHtml(tempDir));
+    });
+
+    fs.writeFileSync(indexPath, "<html><body>Ærøskøbing blåbærgrød</body></html>", "utf8");
+
+    const res = await request(app).get("/PAP/issues/PAP-7310");
+
+    expect(res.headers["content-type"]).toContain("charset=utf-8");
+    expect(res.text).toContain("Ærøskøbing blåbærgrød");
   });
 });
